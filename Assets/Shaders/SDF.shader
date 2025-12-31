@@ -1,16 +1,36 @@
 Shader "Custom/SDF"
 {
+    Properties
+    {
+        _MainTex ("Sprite Texture", 2D) = "white" {}
+        gradient_texture ("Gradient Texture", 2D) = "white" {}
+
+        field_min ("Field Min", Float) = -50
+        field_max ("Field Max", Float) = 50
+        smooth_k ("Smooth K", Float) = 5
+    }
+
     SubShader
     {
         Tags
         {
-            "RenderType"="Opaque" "Queue"="Background"
+            "Queue"="Transparent"
+            "RenderType"="Transparent"
+            "IgnoreProjector"="True"
+            "RenderPipeline"="UniversalPipeline"
         }
+
         Pass
         {
+            Blend SrcAlpha OneMinusSrcAlpha
+            ZWrite Off
+            Cull Off
+
             HLSLPROGRAM
             #pragma vertex vert
             #pragma fragment frag
+            #pragma target 4.5
+
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Assets/Shaders/SDFLib.hlsl"
 
@@ -22,21 +42,12 @@ Shader "Custom/SDF"
 
             struct varyings
             {
-                float4 position_cs : SV_POSITION;
+                float4 position_hcs : SV_POSITION;
                 float2 uv : TEXCOORD0;
+                float2 world_pos : TEXCOORD1;
             };
 
-            // 顶点函数
-            varyings vert(attributes v)
-            {
-                varyings o;
-                o.position_cs = TransformObjectToHClip(v.position_os.xyz);
-                o.uv = v.uv;
-                return o;
-            }
-
-            // Shape 数据结构
-            struct shape
+            struct sdf_shape
             {
                 float2 center;
                 float2 size;
@@ -48,48 +59,97 @@ Shader "Custom/SDF"
                 int operation;
             };
 
-            // 最大支持形状数量
-            #define MAX_SHAPES 64
-            StructuredBuffer<shape> shapes;
+            TEXTURE2D(_MainTex);
+            SAMPLER(sampler_MainTex);
+
+            TEXTURE2D(gradient_texture);
+            SAMPLER(sampler_gradient_texture);
+
+            StructuredBuffer<sdf_shape> shapes;
             int shape_count;
 
-            float compute_shape_sdf(float2 uv, shape shape)
+            float field_min;
+            float field_max;
+            float smooth_k;
+
+            varyings vert(attributes v)
             {
-                float d = 100000.0; // 初始大值
-                if (shape.shape_type == 0) d = sdf_circle(uv, shape.center, shape.radius);
-                else if (shape.shape_type == 1)
-                    d = sdf_round_rectangle(uv, shape.center, shape.size, shape.radius,
-                                            shape.angle);
-                else if (shape.shape_type == 2) d = sdf_triangle(uv, shape.center, shape.v1, shape.v2);
-                return d;
+                varyings o;
+                VertexPositionInputs pos = GetVertexPositionInputs(v.position_os.xyz);
+                o.position_hcs = pos.positionCS;
+                o.uv = v.uv;
+                o.world_pos = pos.positionWS.xy;
+                return o;
             }
 
-            float CombineSDF(float d1, float d2, int op)
+            float eval_shape(float2 p, sdf_shape s)
             {
-                if (op == 0) return sdf_union(d1, d2);
-                if (op == 1) return sdf_subtract(d1, d2);
-                if (op == 2) return sdf_intersect(d1, d2);
-                if (op == 3) return sdf_smooth_union(d1, d2, 10.0);
-                // k=10,可调
-                return d2;
-            }
-
-            // 片段函数
-            half4 frag(varyings i) : SV_Target
-            {
-                float2 uv = i.uv; // 屏幕空间
-                float dist = 100000.0; // 初始场值
-
-                for (int s = 0; s < shape_count; s++)
+                if (s.shape_type == 0) // Circle
                 {
-                    float d = compute_shape_sdf(uv, shapes[s]);
-                    dist = CombineSDF(dist, d, shapes[s].operation);
+                    return sdf_circle(p, s.center, s.radius);
+                }
+                if (s.shape_type == 1) // RoundedRect
+                {
+                    return sdf_round_rectangle(
+                        p,
+                        s.center,
+                        s.size,
+                        s.radius,
+                        s.angle
+                    );
+                }
+                if (s.shape_type == 2) // Triangle
+                {
+                    return sdf_triangle(p, s.center, s.v1, s.v2);
                 }
 
-                return float4(dist, 0, 0, 1); // 输出 RFloat，G/B/A 填充无意义
+                return 1e5;
+            }
+
+            float apply_op(float d, float new_d, int op)
+            {
+                if (op == 0) return sdf_union(d, new_d);
+                if (op == 1) return sdf_subtract(d, new_d);
+                if (op == 2) return sdf_intersect(d, new_d);
+                if (op == 3) return sdf_smooth_union(d, new_d, smooth_k);
+
+                return new_d;
+            }
+
+            half4 frag(varyings i) : SV_Target
+            {
+                // Sprite alpha（可选）
+                half4 sprite_col = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv);
+                if (sprite_col.a <= 0.001)
+                    discard;
+
+                float2 p = i.world_pos;
+
+                float d = 1e5;
+
+                for (int idx = 0; idx < shape_count; idx++)
+                {
+                    float sd = eval_shape(p, shapes[idx]);
+
+                    if (idx == 0)
+                        d = sd;
+                    else
+                        d = apply_op(d, sd, shapes[idx].operation);
+                }
+
+                // 场值映射到 0~1
+                float t = saturate((d - field_min) / (field_max - field_min));
+
+                half4 col = SAMPLE_TEXTURE2D(
+                    gradient_texture,
+                    sampler_gradient_texture,
+                    float2(t, 0.5)
+                );
+
+                col.a *= sprite_col.a;
+                return col;
             }
             ENDHLSL
         }
     }
-    FallBack Off
 }
