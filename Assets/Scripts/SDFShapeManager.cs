@@ -14,6 +14,7 @@ public class SDFRenderManager : MonoBehaviour
     private static readonly int Stride = Marshal.SizeOf(typeof(SDFShape));
 
     public static readonly List<SDFShapeRender> SDFShapeRenders = new();
+    private static readonly int SmoothK = Shader.PropertyToID("smooth_k");
 
     public float fieldMin = -50f;
     public float fieldMax = 50f;
@@ -111,7 +112,7 @@ public class SDFRenderManager : MonoBehaviour
         _material.SetTexture(GradientTexture, _gradientTexture);
         _material.SetFloat(FieldMin, fieldMin);
         _material.SetFloat(FieldMax, fieldMax);
-        _material.SetFloat("", smoothK);
+        _material.SetFloat(SmoothK, smoothK);
 
         if (_shapeBuffer != null)
         {

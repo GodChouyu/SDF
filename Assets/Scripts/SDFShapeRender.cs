@@ -10,11 +10,15 @@ public class SDFShapeRender : MonoBehaviour
     public ShapeType shapeType;
     public SDFOperation sdfOperation;
 
+    public int renderOrder;
+
     public SDFShape SDFShape;
+
 
     private void OnEnable()
     {
         SDFRenderManager.SDFShapeRenders.Add(this);
+        SDFRenderManager.SDFShapeRenders.Sort((left, right) => left.renderOrder.CompareTo(right.renderOrder));
     }
 
     private void Update()
